@@ -157,6 +157,12 @@ else {
 
 $configDir = Join-Path $repoRoot ".openclaw"
 $workspaceDir = Join-Path $repoRoot "workspace"
+$dockerImage = if ($dotenv.Contains("OPENCLAW_IMAGE") -and -not [string]::IsNullOrWhiteSpace($dotenv["OPENCLAW_IMAGE"])) {
+    [string]$dotenv["OPENCLAW_IMAGE"]
+}
+else {
+    "ghcr.io/openclaw/openclaw:latest"
+}
 
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 New-Item -ItemType Directory -Force -Path $workspaceDir | Out-Null
@@ -170,7 +176,7 @@ Set-DotEnvValue -Values $dotenv -Key "OPENCLAW_WORKSPACE_DIR" -Value (To-Compose
 Set-DotEnvValue -Values $dotenv -Key "OPENCLAW_GATEWAY_PORT" -Value "18789"
 Set-DotEnvValue -Values $dotenv -Key "OPENCLAW_BRIDGE_PORT" -Value "18790"
 Set-DotEnvValue -Values $dotenv -Key "OPENCLAW_GATEWAY_BIND" -Value "lan"
-Set-DotEnvValue -Values $dotenv -Key "OPENCLAW_IMAGE" -Value "openclaw:local"
+Set-DotEnvValue -Values $dotenv -Key "OPENCLAW_IMAGE" -Value $dockerImage
 
 Write-DotEnv -Path $dotenvPath -Values $dotenv
 
@@ -179,11 +185,18 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "Using model: $openClawModel"
+Write-Host "Docker image: $dockerImage"
 Write-Host "Config dir:  $configDir"
 Write-Host "Workspace:   $workspaceDir"
 Write-Host ""
-Write-Host "Building OpenClaw Docker image..."
-Invoke-Docker build -t "openclaw:local" -f "Dockerfile" "."
+if ($dockerImage -eq "openclaw:local") {
+    Write-Host "Building OpenClaw Docker image..."
+    Invoke-Docker build -t "openclaw:local" -f "Dockerfile" "."
+}
+else {
+    Write-Host "Pulling OpenClaw Docker image..."
+    Invoke-Docker pull $dockerImage
+}
 
 Write-Host ""
 Write-Host "Running non-interactive OpenClaw onboarding..."
@@ -191,7 +204,6 @@ Invoke-DockerCompose run --rm --no-deps --entrypoint node openclaw-gateway `
     dist/index.js onboard --non-interactive --mode local `
     --auth-choice openrouter-api-key `
     --openrouter-api-key $openRouterApiKey `
-    --model $openClawModel `
     --secret-input-mode plaintext `
     --gateway-auth token `
     --gateway-token $gatewayToken `
@@ -203,12 +215,16 @@ Invoke-DockerCompose run --rm --no-deps --entrypoint node openclaw-gateway `
 
 Write-Host ""
 Write-Host "Pinning Docker gateway settings..."
+$allowedOriginsJson = '["http://localhost:18789","http://127.0.0.1:18789"]'
+$allowedOriginsCommand = "node dist/index.js config set gateway.controlUi.allowedOrigins '$allowedOriginsJson' --strict-json"
 Invoke-DockerCompose run --rm --no-deps --entrypoint node openclaw-gateway `
     dist/index.js config set gateway.mode local
 Invoke-DockerCompose run --rm --no-deps --entrypoint node openclaw-gateway `
     dist/index.js config set gateway.bind lan
+Invoke-DockerCompose run --rm --no-deps --entrypoint sh openclaw-gateway `
+    -lc $allowedOriginsCommand
 Invoke-DockerCompose run --rm --no-deps --entrypoint node openclaw-gateway `
-    dist/index.js config set gateway.controlUi.allowedOrigins "[`"http://localhost:18789`",`"http://127.0.0.1:18789`"]" --strict-json
+    dist/index.js config set agents.defaults.model.primary $openClawModel
 
 Write-Host ""
 Write-Host "Starting OpenClaw gateway..."
